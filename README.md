@@ -1,0 +1,1 @@
+This repository holds only this README and `.github/workflows/linux-lane.yml`, which runs the Linux test lane of [aldegad/sprite-gen](https://github.com/aldegad/sprite-gen) (`scripts/linux_lane.sh`) at one commit given by its 40-character SHA on GitHub-hosted runners, started only by hand (`workflow_dispatch`).

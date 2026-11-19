@@ -1,0 +1,145 @@
+# Runs aldegad/sprite-gen's Linux test lane (scripts/linux_lane.sh) at one commit.
+# Started by hand only: nothing here runs on push or pull_request, and only a person with write
+# access to this repository can start it.
+#
+#   gh workflow run linux-lane.yml --repo aldegad/sprite-gen-lane -f sha=<40 hex> [-f tree=<40 hex>] [-f artifact=true]
+#
+# The commit has passed the lane when job `suite` (--rife-unmeasured, exit 3) and job `rife`
+# (--rife-only, exit 0) both end green in the same run, as scripts/linux_lane.sh defines it.
+# Two jobs, not one, because a job on a GitHub-hosted runner stops at 6 hours.
+
+name: sprite-gen linux lane
+
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: "aldegad/sprite-gen commit to measure (40 hex)"
+        required: true
+        type: string
+      tree:
+        description: "its expected tree (40 hex, optional); the run stops if it differs"
+        required: false
+        type: string
+      artifact:
+        description: "also package the commit (wheel, sdist, SHA256SUMS, SOURCE_SHA)"
+        required: false
+        type: boolean
+        default: false
+
+permissions: {}   # the job token gets no scope: the lane clones a public repository and writes nothing back
+
+concurrency:
+  group: lane-${{ inputs.sha }}
+  cancel-in-progress: false
+
+env:
+  # Inputs reach the shell only through the environment, never pasted into a script.
+  SHA: ${{ inputs.sha }}
+  TREE: ${{ inputs.tree }}
+  ARTIFACT: ${{ inputs.artifact }}
+
+defaults:
+  run:
+    shell: bash -euo pipefail {0}
+
+jobs:
+  suite:
+    name: every gate but RIFE (--rife-unmeasured, exit 3)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    container:
+      # Debian bookworm, whose mesa-vulkan-drivers (22.3.6) is the llvmpipe the lane's RIFE bounds were measured on.
+      image: python:3.14.10-slim-bookworm@sha256:3fe1a0b6c2d6b2ebb572906cdabeca75aeb558c0c17db5ffefbcf8094871c32b
+    steps:
+      - &tools
+        name: host tools
+        timeout-minutes: 20
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends ffmpeg git curl ca-certificates unzip libvulkan1 mesa-vulkan-drivers nodejs
+          curl -fsSL -o /tmp/libwebp.tar.gz https://storage.googleapis.com/downloads.webmproject.org/releases/webp/libwebp-1.6.0-linux-x86-64.tar.gz
+          echo '1c5ffab71efecefa0e3c23516c3a3a1dccb45cc310ae1095c6f14ae268e38067  /tmp/libwebp.tar.gz' | sha256sum -c -
+          tar -xzf /tmp/libwebp.tar.gz -C /opt
+          ln -s /opt/libwebp-1.6.0-linux-x86-64/bin/* /usr/local/bin/
+          dpkg-query -W -f='${Package} ${Version}\n' mesa-vulkan-drivers libvulkan1 ffmpeg nodejs git
+          python3.14 --version
+          nproc
+          grep -m1 'model name' /proc/cpuinfo
+          grep -E '^(MemTotal|MemAvailable):' /proc/meminfo
+          df -h /
+          ls /usr/share/vulkan/icd.d
+      - &clone
+        name: clone the commit (plain git, no checkout action, no token)
+        run: |
+          [[ "$SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "sha must be 40 lowercase hex" >&2; exit 2; }
+          [ -z "$TREE" ] || [[ "$TREE" =~ ^[0-9a-f]{40}$ ]] || { echo "tree must be empty or 40 lowercase hex" >&2; exit 2; }
+          git clone -q --no-checkout https://github.com/aldegad/sprite-gen.git /lane/src
+          cd /lane/src
+          # A pull request's head is reachable only under refs/pull, which a clone does not fetch.
+          git cat-file -e "$SHA^{commit}" 2>/dev/null || git fetch -q origin "$SHA"
+          git checkout -q -B lane "$SHA"
+          test "$(git rev-parse HEAD)" = "$SHA"
+          [ -z "$TREE" ] || test "$(git rev-parse 'HEAD^{tree}')" = "$TREE"
+          test -z "$(git status --porcelain)"
+          git log -1 --format='%H %T %s'
+      - name: lane
+        working-directory: /lane/src
+        run: |
+          unset SPRITE_GEN_RIFE SPRITE_GEN_RIFE_MODEL SPRITE_GEN_LANE_PYTHON
+          args=(--rife-unmeasured "split for the 6 h job limit: RIFE runs in this run's rife job at the same commit")
+          if [ "$ARTIFACT" = true ]; then mkdir -p /lane/artifacts; args+=(--artifact /lane/artifacts); fi
+          set +e; scripts/linux_lane.sh "${args[@]}" 2>&1 | tee /lane/lane.log; rc=${PIPESTATUS[0]}; set -e
+          echo "lane_exit $rc"
+          test "$rc" = 3
+          grep -F "linux_lane: every gate but RIFE passed at $SHA" /lane/lane.log
+          test -z "$(git status --porcelain)"
+      - name: keep the log
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9   # v7.0.2
+        with:
+          name: suite-log
+          path: /lane/lane.log
+          retention-days: 14
+          if-no-files-found: ignore
+      - name: keep the four files (wheel, sdist, SHA256SUMS, SOURCE_SHA) and nothing else
+        if: inputs.artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9   # v7.0.2
+        with:
+          name: package-${{ inputs.sha }}
+          path: /lane/artifacts/
+          retention-days: 14
+          if-no-files-found: error
+
+  rife:
+    name: RIFE gates (--rife-only, exit 0)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 350
+    container:
+      image: python:3.14.10-slim-bookworm@sha256:3fe1a0b6c2d6b2ebb572906cdabeca75aeb558c0c17db5ffefbcf8094871c32b
+    steps:
+      - *tools
+      - *clone
+      - name: lane
+        working-directory: /lane/src
+        run: |
+          unset SPRITE_GEN_RIFE SPRITE_GEN_RIFE_MODEL SPRITE_GEN_LANE_PYTHON
+          set +e; scripts/linux_lane.sh --rife-only 2>&1 | tee /lane/lane.log; rc=${PIPESTATUS[0]}; set -e
+          echo "lane_exit $rc"
+          test "$rc" = 0
+          grep -F "linux_lane: the RIFE gates passed at $SHA" /lane/lane.log
+      - name: keep the log
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9   # v7.0.2
+        with:
+          name: rife-log
+          path: /lane/lane.log
+          retention-days: 14
+          if-no-files-found: ignore
+
+  verdict:
+    needs: [suite, rife]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - run: echo "linux lane passed at $SHA (suite exit 3 and rife exit 0 in this run)"
