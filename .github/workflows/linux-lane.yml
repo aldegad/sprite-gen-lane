@@ -129,6 +129,11 @@ jobs:
       - *clone
       - name: lane
         working-directory: /lane/src
+        env:
+          # One line per test as it ends (with the lane's -q, -vv is pytest's -v), unbuffered, and each test's time at the end:
+          # a run cut at the job limit still says which tests ran, which failed, and when each ended.
+          PYTEST_ADDOPTS: "-vv --durations=0"
+          PYTHONUNBUFFERED: "1"
         run: |
           unset SPRITE_GEN_RIFE SPRITE_GEN_RIFE_MODEL SPRITE_GEN_LANE_PYTHON
           set +e; scripts/linux_lane.sh --rife-only 2>&1 | tee /lane/lane.log; rc=${PIPESTATUS[0]}; set -e
