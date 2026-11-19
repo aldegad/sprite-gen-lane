@@ -2,13 +2,16 @@
 # Started by hand only: nothing here runs on push or pull_request, and only a person with write
 # access to this repository can start it.
 #
-#   gh workflow run linux-lane.yml --repo aldegad/sprite-gen-lane -f sha=<40 hex> [-f tree=<40 hex>] [-f artifact=true]
+#   gh workflow run linux-lane.yml --repo aldegad/sprite-gen-lane -f sha=<40 hex> [-f ref=<branch or PR>] [-f tree=<40 hex>] [-f artifact=true]
+#
+# The run is named after `ref` and `sha`, so runs started at the same time for different branches stay apart in the list.
 #
 # The commit has passed the lane when job `suite` (--rife-unmeasured, exit 3) and job `rife`
 # (--rife-only, exit 0) both end green in the same run, as scripts/linux_lane.sh defines it.
 # Two jobs, not one, because a job on a GitHub-hosted runner stops at 6 hours.
 
 name: sprite-gen linux lane
+run-name: "linux lane: ${{ inputs.ref || 'no ref' }} @ ${{ inputs.sha }}"
 
 on:
   workflow_dispatch:
@@ -16,6 +19,10 @@ on:
       sha:
         description: "aldegad/sprite-gen commit to measure (40 hex)"
         required: true
+        type: string
+      ref:
+        description: "the branch or pull request the commit is on, shown in the run's name only (optional)"
+        required: false
         type: string
       tree:
         description: "its expected tree (40 hex, optional); the run stops if it differs"
